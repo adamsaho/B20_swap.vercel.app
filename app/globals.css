@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #080b14;
+  --bg-raised: #0f1420;
+  --bg-card: #131926;
+  --line: #1e2535;
+  --ink: #e8edf5;
+  --ink-dim: #8892a4;
+  --accent: #7c3aed;
+  --accent-light: #a78bfa;
+  --accent-dim: #1e1040;
+  --green: #10b981;
+  --green-dim: #064e3b;
+  --warn: #f59e0b;
+  --error: #ef4444;
+}
+
+html, body {
+  background: radial-gradient(ellipse 60% 40% at 50% -5%, rgba(124,58,237,0.18), transparent), var(--bg);
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+}
+
+::selection { background: var(--accent-dim); color: var(--accent-light); }
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  padding: 1.25rem;
+}
+
+.input-box {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  padding: 0.875rem 1rem;
+  color: var(--ink);
+  width: 100%;
+  font-size: 1.5rem;
+  font-weight: 500;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.input-box:focus { border-color: var(--accent); }
+.input-box::placeholder { color: #2d3748; }
+
+.btn-primary {
+  display: flex; align-items: center; justify-content: center; gap: 0.5rem;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  border-radius: 0.875rem;
+  padding: 0.875rem 1.5rem;
+  width: 100%;
+  transition: opacity 0.15s;
+  font-size: 1rem;
+}
+.btn-primary:hover:not(:disabled) { opacity: 0.85; }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-secondary {
+  display: flex; align-items: center; justify-content: center; gap: 0.5rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  color: var(--ink-dim);
+  font-weight: 500;
+  border-radius: 0.75rem;
+  padding: 0.625rem 1rem;
+  transition: border-color 0.15s, color 0.15s;
+  font-size: 0.875rem;
+}
+.btn-secondary:hover { border-color: var(--accent-light); color: var(--accent-light); }
+
+.tab {
+  padding: 0.5rem 1.25rem;
+  border-radius: 0.625rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+  transition: background 0.15s, color 0.15s;
+  color: var(--ink-dim);
+}
+.tab.active {
+  background: var(--accent-dim);
+  color: var(--accent-light);
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { animation: spin 1s linear infinite; }
