@@ -10,9 +10,11 @@ export const WETH_ADDRESS = '0x4200000000000000000000000000000000000006' as Addr
 export const WETH_DECIMALS = 18
 
 // ── Uniswap V3 on Base Sepolia ────────────────────────────────────────────────
-export const UNI_FACTORY   = '0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24' as Address
-export const UNI_ROUTER    = '0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4' as Address
-export const UNI_NFT_PM    = '0x27F971cb582BF9E50F397e4d29a5C7A34f11faA2' as Address
+export const UNI_FACTORY    = '0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24' as Address
+export const UNI_ROUTER     = '0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4' as Address
+export const UNI_NFT_PM     = '0x27F971cb582BF9E50F397e4d29a5C7A34f11faA2' as Address
+// Fixed: was the zero address, which made every quote silently fail.
+export const QUOTER_ADDRESS = '0xC5290058841028F1614F3A6F0F5816cAd0df5E27' as Address
 
 // Fee tiers (bps * 100). 3000 = 0.3%, 10000 = 1%
 export const FEE_TIER = 3000   // use 0.3% pool
@@ -71,15 +73,49 @@ export const routerAbi = [
   },
 ] as const
 
+export const quoterAbi = [
+  {
+    inputs: [
+      {
+        components: [
+          { internalType: "address", name: "tokenIn", type: "address" },
+          { internalType: "address", name: "tokenOut", type: "address" },
+          { internalType: "uint256", name: "amountIn", type: "uint256" },
+          { internalType: "uint24", name: "fee", type: "uint24" },
+          {
+            internalType: "uint160",
+            name: "sqrtPriceLimitX96",
+            type: "uint160",
+          },
+        ],
+        internalType: "struct IQuoterV2.QuoteExactInputSingleParams",
+        name: "params",
+        type: "tuple",
+      },
+    ],
+    name: "quoteExactInputSingle",
+    outputs: [
+      { internalType: "uint256", name: "amountOut", type: "uint256" },
+      { internalType: "uint160", name: "sqrtPriceX96After", type: "uint160" },
+      {
+        internalType: "uint32",
+        name: "initializedTicksCrossed",
+        type: "uint32",
+      },
+      { internalType: "uint256", name: "gasEstimate", type: "uint256" },
+    ],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+] as const;
+
+
 // ── Math helpers ──────────────────────────────────────────────────────────────
 // encodeSqrtRatioX96: given price = token1/token0, returns sqrt(price) * 2^96
 // price here is "how many WETH per ZEEME" (since ZEEME < WETH in address order TBD)
 export function encodeSqrtPriceX96(price: bigint, decimals0 = 18, decimals1 = 18): bigint {
-  // price is in human units e.g. 0.0001 ETH per ZEEME
-  // We work in 1e18-scaled integers to keep precision
   const Q96 = 2n ** 96n
-  // sqrt(price) * Q96 — using integer sqrt via Newton's method
-  const numerator = price * Q96 * Q96  // we'll sqrt this
+  const numerator = price * Q96 * Q96
   return bigintSqrt(numerator)
 }
 
@@ -93,11 +129,7 @@ function bigintSqrt(n: bigint): bigint {
 }
 
 // Helper: sqrtPrice for "1 ZEEME = price ETH"
-// tokenA=ZEEME (lower addr?), tokenB=WETH — order depends on actual addresses
 export function sqrtPriceX96ForPrice(zeemePerEth: number): bigint {
-  // price = WETH per ZEEME = 1/zeemePerEth
-  // sqrtPrice = sqrt(price) * 2^96
-  // We scale: price_scaled = floor(1/zeemePerEth * 1e18)
   const priceScaled = BigInt(Math.floor(1e18 / zeemePerEth))
   const Q96 = 2n ** 96n
   return bigintSqrt(priceScaled * Q96 * Q96 / (10n ** 18n))

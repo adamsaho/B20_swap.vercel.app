@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import {
   useAccount,
   useConnect,
@@ -25,7 +25,6 @@ import {
   UNI_FACTORY,
   UNI_ROUTER,
   UNI_NFT_PM,
-  QUOTER_ADDRESS,
   FEE_TIER,
   erc20Abi,
   wethAbi,
@@ -33,7 +32,6 @@ import {
   poolAbi,
   nftPmAbi,
   routerAbi,
-  quoterAbi,
   sqrtPriceX96ForPrice,
   MIN_TICK,
   MAX_TICK,
@@ -356,6 +354,9 @@ function CreatePool({
 }
 
 /* ── Step 2 ── */
+// The pool is always ZEEME/WETH under the hood — but the user can fund the
+// non-ZEEME side either with native ETH (auto-wrapped) or with WETH they
+// already hold (no wrap step needed).
 type PairToken = "ETH" | "WETH";
 
 function AddLiquidity({
@@ -400,7 +401,7 @@ function AddLiquidity({
     query: { enabled: !!address },
   });
   const zeemeWei = parseUnits(zeeme || "0", 18);
-  const pairWei = parseUnits(pairAmount || "0", 18);
+  const pairWei = parseUnits(pairAmount || "0", 18); // same math for ETH or WETH, both 18 decimals
   const { data: zA, refetch: rZA } = useReadContract({
     address: ZEEME_ADDRESS,
     abi: erc20Abi,
@@ -423,6 +424,7 @@ function AddLiquidity({
     }
   }, [isSuccess]);
 
+  // Only need to wrap if the user chose ETH and doesn't already have enough WETH
   const needWrap = pairToken === "ETH" && (wethBal ?? 0n) < pairWei;
   const needZA = (zA ?? 0n) < zeemeWei;
   const needWA = (wA ?? 0n) < pairWei;
@@ -560,6 +562,7 @@ function AddLiquidity({
         </div>
       )}
 
+      {/* Pair-token toggle */}
       <div>
         <label
           className="block text-xs mb-1.5"
@@ -658,41 +661,21 @@ function AddLiquidity({
   );
 }
 
-/* ── Step 3: Swap ──
-   Routes:
-   - ETH  <-> WETH   : plain wrap / unwrap (1:1, no pool needed)
-   - WETH <-> ZEEME  : direct Uniswap V3 swap through the router
-   - ETH  -> ZEEME   : wrap ETH -> WETH, then swap WETH -> ZEEME
-   - ZEEME -> ETH    : swap ZEEME -> WETH, then unwrap WETH -> ETH
-*/
+/* ── Step 3: Swap (ETH⇄WETH wrap/unwrap + WETH⇄ZEEME router swap) ── */
 
 type TokenSym = "ETH" | "WETH" | "ZEEME";
 
+// WETH is the hub: ETH only connects to WETH, ZEEME only connects to WETH.
 const TOKEN_GRAPH: Record<TokenSym, TokenSym[]> = {
-  ETH: ["WETH", "ZEEME"],
+  ETH: ["WETH"],
   WETH: ["ETH", "ZEEME"],
-  ZEEME: ["WETH", "ETH"],
+  ZEEME: ["WETH"],
 };
 
 function tokenAddress(t: TokenSym): Address | undefined {
   if (t === "WETH") return WETH_ADDRESS;
   if (t === "ZEEME") return ZEEME_ADDRESS;
   return undefined; // ETH is native, no contract address
-}
-
-type RouteType =
-  | "wrap"
-  | "unwrap"
-  | "directSwap"
-  | "buyViaWeth"
-  | "sellViaWeth";
-
-function routeFor(from: TokenSym, to: TokenSym): RouteType {
-  if (from === "ETH" && to === "WETH") return "wrap";
-  if (from === "WETH" && to === "ETH") return "unwrap";
-  if (from === "ETH" && to === "ZEEME") return "buyViaWeth";
-  if (from === "ZEEME" && to === "ETH") return "sellViaWeth";
-  return "directSwap"; // WETH <-> ZEEME
 }
 
 function Swap({
@@ -706,15 +689,14 @@ function Swap({
   const exists = poolAddr && poolAddr !== zeroAddress;
 
   const [from, setFrom] = useState<TokenSym>("ETH");
-  const [to, setTo] = useState<TokenSym>("ZEEME");
+  const [to, setTo] = useState<TokenSym>("WETH");
   const [amount, setAmount] = useState("0.001");
 
+  // Keep "to" valid whenever "from" changes
   useEffect(() => {
     const opts = TOKEN_GRAPH[from];
     if (!opts.includes(to)) setTo(opts[0]);
   }, [from]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const routeType = routeFor(from, to);
 
   const { data: hash, writeContract, isPending, error } = useWriteContract();
   const { isSuccess } = useWaitForTransactionReceipt({ hash });
@@ -739,95 +721,33 @@ function Swap({
     query: { enabled: !!address },
   });
 
+  const actionType: "wrap" | "unwrap" | "swap" =
+    from === "ETH" && to === "WETH"
+      ? "wrap"
+      : from === "WETH" && to === "ETH"
+      ? "unwrap"
+      : "swap";
+
+  const tokenIn = tokenAddress(from); // undefined for ETH
+  const tokenOut = tokenAddress(to);
   const amtIn = parseUnits(amount || "0", 18); // all tokens here are 18 decimals
 
-  // The token that actually needs approval/swapping for router-touching routes.
-  // For buyViaWeth the router pulls WETH (after wrap); for sellViaWeth it pulls ZEEME.
-  const swapTokenIn: Address | undefined =
-    routeType === "directSwap"
-      ? tokenAddress(from)
-      : routeType === "buyViaWeth"
-      ? WETH_ADDRESS
-      : routeType === "sellViaWeth"
-      ? ZEEME_ADDRESS
-      : undefined;
-
-  const swapTokenOut: Address | undefined =
-    routeType === "directSwap"
-      ? tokenAddress(to)
-      : routeType === "buyViaWeth"
-      ? ZEEME_ADDRESS
-      : routeType === "sellViaWeth"
-      ? WETH_ADDRESS
-      : undefined;
-
-  const touchesRouter =
-    routeType === "directSwap" ||
-    routeType === "buyViaWeth" ||
-    routeType === "sellViaWeth";
-
-  const needWrap = routeType === "buyViaWeth" && (wethBal ?? 0n) < amtIn;
-
+  // Only relevant for the 'swap' action (WETH <-> ZEEME through the router)
   const { data: allow, refetch: rA } = useReadContract({
-    address: swapTokenIn as Address,
+    address: tokenIn as Address,
     abi: erc20Abi,
     functionName: "allowance",
-    args: address && swapTokenIn ? [address, UNI_ROUTER] : undefined,
-    query: { enabled: !!address && touchesRouter },
+    args: address && tokenIn ? [address, UNI_ROUTER] : undefined,
+    query: { enabled: !!address && actionType === "swap" },
   });
-  const needApprove = touchesRouter && !needWrap && (allow ?? 0n) < amtIn;
-
-  // ── Live quote from the Quoter contract ──
-  const {
-    data: quoteData,
-    isFetching: quoteLoading,
-    refetch: rQuote,
-  } = useReadContract({
-    address: QUOTER_ADDRESS,
-    abi: quoterAbi,
-    functionName: "quoteExactInputSingle",
-    args: [
-      {
-        tokenIn: (swapTokenIn ?? zeroAddress) as Address,
-        tokenOut: (swapTokenOut ?? zeroAddress) as Address,
-        amountIn: amtIn,
-        fee: FEE_TIER,
-        sqrtPriceLimitX96: 0n,
-      },
-    ],
-    query: {
-      enabled:
-        touchesRouter &&
-        !!exists &&
-        amtIn > 0n &&
-        !!swapTokenIn &&
-        !!swapTokenOut,
-    },
-  });
-  const quotedOut = quoteData ? (quoteData[0] as bigint) : undefined;
-
-  // Track whether we still owe an "unwrap remaining WETH" step after a sellViaWeth swap.
-  const [pendingUnwrap, setPendingUnwrap] = useState(false);
-  const lastAction = useRef<string | null>(null);
-
-  useEffect(() => {
-    // Reset the pending-unwrap flag whenever the user changes the trade inputs.
-    setPendingUnwrap(false);
-  }, [from, to, amount]);
+  const needApprove = actionType === "swap" && (allow ?? 0n) < amtIn;
 
   useEffect(() => {
     if (isSuccess) {
       rZ();
       rW();
       rE();
-      if (touchesRouter) rA();
-      if (touchesRouter && exists) rQuote();
-      if (lastAction.current === "swap" && routeType === "sellViaWeth") {
-        setPendingUnwrap(true);
-      }
-      if (lastAction.current === "unwrapRemainder") {
-        setPendingUnwrap(false);
-      }
+      if (actionType === "swap") rA();
     }
   }, [isSuccess]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -844,34 +764,17 @@ function Swap({
       ? formatUnits(zeemeBal, 18)
       : undefined;
 
-  // Which single tx does the button trigger right now?
-  const act =
-    routeType === "wrap"
-      ? "wrap"
-      : routeType === "unwrap"
-      ? "unwrap"
-      : needWrap
-      ? "wrap"
-      : needApprove
-      ? "approve"
-      : routeType === "sellViaWeth" && pendingUnwrap
-      ? "unwrapRemainder"
-      : "swap";
-
   const actionLabel =
-    act === "wrap"
+    actionType === "wrap"
       ? `Wrap ${amount || "0"} ETH → WETH`
-      : act === "unwrap"
+      : actionType === "unwrap"
       ? `Unwrap ${amount || "0"} WETH → ETH`
-      : act === "approve"
-      ? `Approve ${from === "ETH" ? "WETH" : from}`
-      : act === "unwrapRemainder"
-      ? `Unwrap WETH → ETH`
+      : needApprove
+      ? `Approve ${from}`
       : `Swap ${from} → ${to}`;
 
   function go() {
-    lastAction.current = act;
-    if (act === "wrap") {
+    if (actionType === "wrap") {
       writeContract({
         address: WETH_ADDRESS,
         abi: wethAbi,
@@ -880,7 +783,7 @@ function Swap({
         chainId: baseSepolia.id,
         gas: 100_000n,
       });
-    } else if (act === "unwrap") {
+    } else if (actionType === "unwrap") {
       writeContract({
         address: WETH_ADDRESS,
         abi: wethAbi,
@@ -889,33 +792,23 @@ function Swap({
         chainId: baseSepolia.id,
         gas: 100_000n,
       });
-    } else if (act === "unwrapRemainder") {
+    } else if (needApprove) {
       writeContract({
-        address: WETH_ADDRESS,
-        abi: wethAbi,
-        functionName: "withdraw",
-        args: [wethBal ?? 0n],
-        chainId: baseSepolia.id,
-        gas: 100_000n,
-      });
-    } else if (act === "approve") {
-      writeContract({
-        address: swapTokenIn as Address,
+        address: tokenIn as Address,
         abi: erc20Abi,
         functionName: "approve",
         args: [UNI_ROUTER, amtIn * 100n],
         chainId: baseSepolia.id,
       });
     } else {
-      // swap
       writeContract({
         address: UNI_ROUTER,
         abi: routerAbi,
         functionName: "exactInputSingle",
         args: [
           {
-            tokenIn: swapTokenIn as Address,
-            tokenOut: swapTokenOut as Address,
+            tokenIn: tokenIn as Address,
+            tokenOut: tokenOut as Address,
             fee: FEE_TIER,
             recipient: address!,
             amountIn: amtIn,
@@ -936,18 +829,7 @@ function Swap({
     setTo(oldFrom);
   }
 
-  const swapPairMissing = touchesRouter && !exists;
-
-  const outputDisplay =
-    routeType === "wrap" || routeType === "unwrap"
-      ? amount || "0.0"
-      : quoteLoading
-      ? "…fetching quote"
-      : quotedOut !== undefined
-      ? Number(formatUnits(quotedOut, 18)).toFixed(to === "ZEEME" ? 2 : 6)
-      : swapPairMissing
-      ? "—"
-      : "0.0";
+  const swapPairMissing = actionType === "swap" && !exists;
 
   return (
     <div className="card space-y-4">
@@ -956,6 +838,7 @@ function Swap({
       </h2>
       <PoolBadge addr={poolAddr} />
 
+      {/* From / To token pickers */}
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label
@@ -1029,12 +912,10 @@ function Swap({
         }}
       >
         <p className="text-xs mb-2" style={{ color: "var(--ink-dim)" }}>
-          To: {to}{" "}
-          {(routeType === "buyViaWeth" || routeType === "sellViaWeth") &&
-            "(via WETH)"}
+          To: {to}
         </p>
-        <p className="text-2xl font-medium" style={{ color: "var(--ink)" }}>
-          {outputDisplay}
+        <p className="text-2xl font-medium" style={{ color: "var(--ink-dim)" }}>
+          {actionType === "swap" ? "~ (market price)" : amount || "0.0"}
         </p>
       </div>
 
@@ -1061,7 +942,7 @@ function Swap({
         ))}
       </div>
 
-      {routeType === "wrap" && (
+      {actionType === "wrap" && (
         <div
           className="text-xs p-2 rounded-lg"
           style={{
@@ -1072,7 +953,7 @@ function Swap({
           ℹ️ Wrapping is 1:1, no fees, no pool required.
         </div>
       )}
-      {routeType === "unwrap" && (
+      {actionType === "unwrap" && (
         <div
           className="text-xs p-2 rounded-lg"
           style={{
@@ -1081,20 +962,6 @@ function Swap({
           }}
         >
           ℹ️ Unwrapping is 1:1, no fees, no pool required.
-        </div>
-      )}
-      {(routeType === "buyViaWeth" || routeType === "sellViaWeth") && (
-        <div
-          className="text-xs p-2 rounded-lg"
-          style={{
-            background: "var(--accent-dim)",
-            color: "var(--accent-light)",
-          }}
-        >
-          ℹ️{" "}
-          {routeType === "buyViaWeth"
-            ? "This wraps your ETH to WETH, then swaps WETH → ZEEME on the pool. You may need to confirm 2–3 transactions."
-            : "This swaps ZEEME → WETH on the pool, then unwraps the WETH you receive back to ETH. You may need to confirm 2–3 transactions."}
         </div>
       )}
       {swapPairMissing && (
@@ -1108,50 +975,6 @@ function Swap({
           ⚠️ No ZEEME/WETH pool yet — complete Step 1 and Step 2 first.
         </div>
       )}
-
-      <div className="space-y-1.5 text-xs">
-        {(routeType === "buyViaWeth"
-          ? [
-              ["Wrap ETH → WETH", !needWrap],
-              ["Approve WETH", needWrap ? false : !needApprove],
-              [
-                "Swap WETH → ZEEME",
-                act === "swap" && !needWrap && !needApprove
-                  ? false
-                  : act === "swap",
-              ],
-            ]
-          : routeType === "sellViaWeth"
-          ? [
-              ["Approve ZEEME", !needApprove],
-              [
-                "Swap ZEEME → WETH",
-                needApprove ? false : act === "swap" ? false : true,
-              ],
-              ["Unwrap WETH → ETH", !pendingUnwrap],
-            ]
-          : routeType === "directSwap"
-          ? [
-              ["Approve " + from, !needApprove],
-              ["Swap", false],
-            ]
-          : []
-        ).map(([l, d], i) => (
-          <div key={i} className="flex items-center gap-2">
-            <span style={{ color: d ? "var(--green)" : "var(--ink-dim)" }}>
-              {d ? "✓" : `${i + 1}.`}
-            </span>
-            <span
-              style={{
-                color: d ? "var(--ink-dim)" : "var(--ink)",
-                textDecoration: d ? "line-through" : "none",
-              }}
-            >
-              {l as string}
-            </span>
-          </div>
-        ))}
-      </div>
 
       {isConnected ? (
         <button
