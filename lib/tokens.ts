@@ -9,6 +9,15 @@ export type TokenInfo = {
   isNative?: boolean;
 };
 
+export const TOKEN_LIST: TokenInfo[] = [
+  {
+    symbol: "ZEEME",
+    name: "Zeemee",
+    address: "0xB200000000000000000000C85708B096DD4D6fbA" as Address,
+    decimals: 18,
+  },
+];
+
 // ── Native pseudo-token (ETH) ──────────────────────────────────────────────
 export const NATIVE_ETH: TokenInfo = {
   symbol: "ETH",
